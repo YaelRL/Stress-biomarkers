@@ -1,0 +1,1292 @@
+---
+title: 'Stress biomarkers in breath biochemicals'
+author: "Yael Rosen Lang"
+date: "29 12 2021"
+output:
+  rmdformats::readthedown:
+    use_bookdown: TRUE
+---
+
+```{r r setup, include=FALSE, results='asis', message=FALSE, warning=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message=FALSE, warning=FALSE, results='asis')
+library(rmdformats)
+library(bookdown)
+library(pander)
+library(ggplot2)
+library(ggpubr)
+#library(summarytools)
+library(sjPlot)
+library(corrplot)
+library(kableExtra)
+library(Hmisc)
+library(dplyr)
+library(tidyr)
+library(gridExtra)
+library(tidyverse)
+library(caret)
+library(class)
+library(lme4)
+library(lmerTest)
+#library(r2glmm)
+#library(performance) 
+#library(interactions)
+library(emmeans)
+library("readxl")
+```
+
+```{r}
+#-------------Demographic and clinical data
+demo_data=read_excel(path='C:/Users/user/Desktop/yael/MPH/Biostatistics_projects/4 Stress biomarkers/Questionnaires.xlsx', 
+                       na=c("-99", "NA")) #sheet="data",
+
+#renaming, labeling and formatting demographic and clinical variables
+names(demo_data)[names(demo_data)=='Subject Code']<-'id'
+names(demo_data)[names(demo_data)=='Birth Place']<-'birth_place'
+names(demo_data)[names(demo_data)=='NATIVE LANGUAGE']<-'language'
+names(demo_data)[names(demo_data)=='STATUS (1=MARRIED, 2=SINGLE)']<-'married'
+names(demo_data)[names(demo_data)=='YEARS OF STUDY']<-'education'
+names(demo_data)[names(demo_data)=='WORKING (1=YES, 2=NO)']<-'employed'
+names(demo_data)[names(demo_data)=='MILITARY SERVICE (1=YES, 2=NO)']<-'military'
+names(demo_data)[names(demo_data)=='DID YOU EXPERIENCE ANY PANIC ATTACKS IN THE PAST? (1=YES, 2=NO)']<-'panic'
+names(demo_data)[names(demo_data)=='IS THERE ANY FAMILY RECORD OF MENTAL ILLNESS? (1=YES, 2=NO)']<-'family_history'
+
+#label(demo_data$birth_place)<-"Place of birth"
+#label(demo_data$married)<-"Married"
+#label(demo_data$education)<-"Education (years)"
+#label(demo_data$employed)<-"Employment status"
+#label(demo_data$military)<-"Military service"
+#label(demo_data$panic)<-"History of a panic attack"
+#label(demo_data$family_history)<-"Family history of mental illness"
+
+demo_data$birth_place[demo_data$birth_place!="Israel"]<-"Other"
+demo_data$birth_place<-factor(demo_data$birth_place, levels=c("Israel", "Other"))
+
+demo_data$language[demo_data$language=="HEBREW"]<-"Hebrew"
+demo_data$language[demo_data$language=="ARABIC"]<-"Arabic"
+demo_data$language[demo_data$language=="RUSSIAN"]<-"Russian"
+demo_data$language[demo_data$language=="FINNISH" | demo_data$language=="PORTUGESE" | demo_data$language=="ENGLISH_AND_HEBREW"]<-"Other"
+demo_data$language<-factor(demo_data$language, levels=c("Hebrew", "Arabic", "Russian", "Other"))
+
+demo_data$married[demo_data$married==2]<-0
+demo_data$married<-factor(demo_data$married, levels=c(0,1), labels=c("No", "Yes"))
+
+demo_data$employed[demo_data$employed==2]<-0
+demo_data$employed<-factor(demo_data$employed, levels=c(0,1), labels=c("No", "Yes"))
+
+demo_data$military[demo_data$military==2]<-0
+demo_data$military<-factor(demo_data$military, levels=c(0,1), labels=c("No", "Yes"))
+
+demo_data$panic[demo_data$panic==2]<-0
+demo_data$panic<-factor(demo_data$panic, levels=c(0,1), labels=c("No", "Yes"))
+
+demo_data$family_history[demo_data$family_history==2]<-0
+demo_data$family_history<-factor(demo_data$family_history, levels=c(0,1), labels=c("No", "Yes"))
+
+#-------------------VAS anxiety
+VAS_data=read_excel(path='C:/Users/user/Desktop/yael/MPH/Biostatistics_projects/4 Stress biomarkers/Questionnaires.xlsx', 
+                     sheet="VAS", na=c("-99", "NA"))
+names(VAS_data)[names(VAS_data)=='Subject']<-'id'
+names(VAS_data)[names(VAS_data)=='Anxiety Level']<-'vas'
+Hmisc::label(VAS_data$vas)<-"VAS Anxiety"
+
+#--------------------state and trait
+state_data=read_excel(path='C:/Users/user/Desktop/yael/MPH/Biostatistics_projects/4 Stress biomarkers/Questionnaires.xlsx', sheet="State Scale", na=c("-99", "NA"))
+names(state_data)[names(state_data)=='Subject']<-'id'
+names(state_data)[names(state_data)=='Grade']<-'state'
+Hmisc::label(state_data$state)<-"State anxiety"
+
+trait_data=read_excel(path='C:/Users/user/Desktop/yael/MPH/Biostatistics_projects/4 Stress biomarkers/Questionnaires.xlsx', sheet="Trait Scale", na=c("-99", "NA"))
+names(trait_data)[names(trait_data)=='Subject']<-'id'
+names(trait_data)[names(trait_data)=='Grade']<-'trait'
+Hmisc::label(trait_data$trait)<-"Trait anxiety"
+
+
+#combining the 3 data sets
+df<-merge(demo_data, trait_data, by=c("id"))
+data<-merge(df, VAS_data, by=c("id"))
+data<-merge(data, state_data, by=c("id", "Stage"))
+
+
+#-------HRV data
+hrv_data=read_excel(path='C:/Users/user/Desktop/yael/MPH/Biostatistics_projects/4 Stress biomarkers/HRV metrics.xlsx', 
+                    na=c("-99", "NA"))
+
+names(hrv_data)[names(hrv_data)=='Subject Code']<-'id'
+
+hrv_data$Group<-factor(hrv_data$Group, levels=c("Stress", "Control"))
+hrv_data$Stage<-factor(hrv_data$Stage, levels=c("A", "B", "C", "D"))
+
+#converting hrv data from long to wide format
+hrv_data<-spread(hrv_data, key = Metric, value = Value)
+
+#adding hrv variables to the data set
+df<-hrv_data%>%select(c(id, Stage, Group, PPG_Rate_Mean, HRV_MeanNN, HRV_CVNN, HRV_SDNN))
+data<-merge(data, df,by=c("id", "Stage"))
+
+names(data)[names(data)=='HRV_MeanNN']<-'meanrr'
+label(data$meanrr)<-"Mean R-R interval"
+names(data)[names(data)=='PPG_Rate_Mean']<-'heart_rate'
+label(data$heart_rate)<-"Mean heart rate"
+#label(data$heart_rate)<-"Heart rate variability"
+names(data)[names(data)=='HRV_CVNN']<-'cvnn'
+label(data$cvnn)<-"HRV"
+names(data)[names(data)=='HRV_SDNN']<-'sdnn'
+label(data$sdnn)<-"SDNN"
+
+#adjusting one outlier (113->104)
+data$heart_rate[data$rate>104]<-104
+#adjusting 2 outliers
+data$cvnn[data$cvnn>0.6]<-0.6
+#adjusting one outlier
+data$state[data$Stage=="C" & data$id=="S1009"]<-23
+
+#---------------breath data
+br_data=read_excel(path='C:/Users/user/Desktop/yael/MPH/Biostatistics_projects/4 Stress biomarkers/Breath Analysis.xlsx', 
+                     na=c("-99", "NA"))
+
+names(br_data)[names(br_data)=='Subject']<-'id'
+
+br_data$Group<-factor(br_data$Group, levels=c("Stress", "Control"))
+br_data$Stage<-factor(br_data$Stage, levels=c("A", "B", "C", "D"))
+
+#identifying participants for which there is data for HRV and also breath
+par1<-unique(br_data$id)
+par2<-unique(hrv_data$id)
+both<-intersect(par1, par2)
+
+#total 26 participants, filtering those who have full data
+data<-data%>% filter(id %in% both)
+br_data<-br_data%>% filter(id %in% both)
+
+#creating a variable for 5X8=40 biomarkers' names
+br_data$marker<-paste(br_data$Sensor, br_data$Feature, sep="")
+markers<-unique(br_data$marker)
+
+#converting breath data from long to wide format
+br_data<-br_data%>%select(-c(Sensor, Feature))
+br_data<-spread(br_data, key = marker, value = Value)
+
+#auc_indx <- grepl('AUC', colnames(br_data))
+#slope_indx <- grepl('Slope', colnames(br_data))
+#mdata<-br_data[, (!auc_indx & !slope_indx)]
+
+#PCA for breath variables
+#start= 8 vars
+#pca <- prcomp(br_data[c(7,12,17,22,27,32,37,42)], center = TRUE, scale = TRUE)#start
+
+#AUC= 8 vars
+#pca <- prcomp(br_data[c(4,9,14,19,24,29,34,39)], center = TRUE, scale = TRUE)#AUC
+
+#start+mid+end= 8X3 vars
+#pca <- prcomp(mdata[c(4:27)], center = TRUE, scale = TRUE, na.action=na.omit)
+
+
+
+#by clusters: slope and all the rest
+#slope_indx <- grepl('Slope', colnames(br_data))
+#pca_slope<- prcomp(br_data[, slope_indx], center = TRUE, scale = TRUE)
+#rest<-br_data[, !slope_indx]%>%select(-c("id", "Stage", "Group"))
+#pca_rest<-prcomp(rest, center = TRUE, scale = TRUE)
+#pc1<-pca_slope$x[,1]
+#pc2<-pca_rest$x[,1]
+
+#all 40 vars
+pca <- prcomp(br_data[c(4:43)], center = TRUE, scale = TRUE)
+pc1<-pca$x[,1]
+pc2<-pca$x[,2]
+#adding breath vars to the data set
+data<-data%>%mutate(breath1=pc1, breath2=pc2)
+
+#creating breath corrected for baseline
+a_breath<-data%>%filter(Stage=="A")%>%select(id, breath1, breath2)
+data<-merge(data, a_breath, by=c("id"))
+names(data)[names(data)=="breath1.x"]<-"breath1"
+names(data)[names(data)=="breath2.x"]<-"breath2"
+data$breath1_d<-data$breath1-data$breath1.y
+data$breath2_d<-data$breath2-data$breath2.y
+#data<-data%>%mutate(start1=pc1)
+
+#imputation
+data$state[is.na(data$state) & data$Stage=="A"]<-31
+data$state[is.na(data$state) & data$Stage=="D"]<-54
+
+#transformations and scaling
+data$vast<-data$vas^(1/3)
+data$statet<-log(data$state)
+data$heart_ratet<-sqrt(data$heart_rate)
+data$trait<-data$trait/10
+data$meanrr<-scale(data$meanrr)
+data$cvnnt<-sqrt(data$cvnn)
+
+#labeling
+label(data$birth_place)<-"Place of birth"
+label(data$married)<-"Married"
+label(data$education)<-"Education (years)"
+label(data$employed)<-"Employment status"
+label(data$military)<-"Military service"
+label(data$panic)<-"History of a panic attack"
+label(data$family_history)<-"Family history of mental illness"
+label(data$breath1)<-"Breath1"
+label(data$breath2)<-"Breath2"
+```
+
+By: Yael Rosen Lang
+
+# Abstract
+**Aim**: In an effort to develop a stress-detection monitor using breath sensors, this study's aim is to investigate possible stress biomarkers in breath biochemicals.     
+**Methods**: Data from breath sensors, as well as heart rate variability measures (HRV) and self-reported anxiety measures (Trait and State Anxiety Inventory questionnaires and VAS anxiety) was collected before, during and after a stressful task, the Trier Social Stress Test (TSST). TSST includes preparing and performing a presentation and performing arithmetic calculations. The intervention group consisted of 14 participants, and the control group consisted of 12 participants.  
+Each participant had measures recorded at 4 stages: baseline (A), end of TSST (B), 30 minutes after TSST (C), and 60 minutes after TSST (D).  
+Statistical analysis was performed using linear models, linear mixed models and bootstrapping.  
+Prediction models for HRV, Trait and State anxiety, VAS anxiety and group assignment were fitted for each stage using K-Nearest Neighbor (KNN) regression and classification models.  
+**Results**: prediction models based on breath data had minor success in predicting State anxiety in stages A, C and D, and also in predicting VAS anxiety, HRV and mean heart rate in stage A.   Classification models for group assignment achieved an accuracy rate of 73% in stages B and D, and 62% in stage C.  
+**Conclusions**:  Further research with larger samples is needed to establish whether breath biochemicals can be used as detectors of stress.
+
+# Data preparation
+The study included 37 participants, out of which 26 participants had complete data. 
+Our analysis data set consisted of 104 observations for 26 participants.  
+The data was imported from excel to R (R Core Team (2020). R: A language and environment for statistical computing. R Foundation for Statistical Computing, Vienna, Austria. URL https://www.R-project.org/.) 
+
+**Missing data**  
+Two participants had one missing entry for State anxiety (for stages A and D), all other data was complete. These 2 missing data points were imputed using linear regression. We used a linear mixed model for State anxiety with VAS and Trait anxiety as predictors and grouping by participant. The model achieved an $R^2$ of 0.76, meaning that we can predict the value of State anxiety with 76% accuracy by using VAS and Trait anxiety values. The 2 missing values were replaced with predictions made by this model.
+
+**Data validation and transformations**  
+The data was checked for out-of-range values and inconsistencies. Box plots were plotted to identify outliers. Transformations were applied to some variables to achieve a distribution that is closer to the normal distribution. Some variables were scaled to match the scale of other variables.  
+
+## Anxiety measures
+Anxiety was assessed using these self-reported anxiety measures:  
+**State anxiety** (State-Trait Anxiety Inventory- STAI questionnaire)- describes current feelings of anxiety. This variable showed a right asymmetric distribution, log transformation was applied.  
+**Trait anxiety** (State-Trait Anxiety Inventory-STAI questionnaire)- describes a general tendency for anxiety. This variable was scaled by 1/10 to match the scale of other variables.  
+**VAS anxiety**- visual analog scale of anxiety. This variable had a right asymmetric distribution, cube root transformation was applied.  
+
+## Heart rate variability 
+Four Heart rate variability variables were tested for their correlation to anxiety measures with mixed models, and their predictive ability was compared using standardized regression coefficients and $R^2$.          
+The best predictor of VAS and State anxiety was mean heart rate. The coefficient of variance for R-R intervals (HRV) was chosen as an additional heart rate variability variable. A full description of the analysis can be found in the [Appendix]. Square-root transformation was used for mean heart rate and HRV.
+
+## Breath sensors
+Breath sensor data was comprised of 8 sensors with 5 features each. The features describe the curve of ambient biochemicals' concentration over time during exhalation.  
+The 40 breath variables were highly inter-correlated: when tested with Pearson's correlation by stage, most correlations were strong (Pearson's correlation |r|>0.7). This makes sense as the sensors were cross-reactive.    
+Having several highly correlated variables can cause multicollinearity and an over-fitted or unstable model. In addition, our small sample size (N=26) allows no more than 2 predictors in a model to avoid over-fitting.  
+For these 2 reasons there is a need for dimentionality reduction (reducing the number of variables).  
+**Principal Component Analysis (PCA)** can eliminate multicollinearity and achieve parsimony while retaining as much information as possible. With PCA we can create uncorrelated variables that are linear combinations of all 40 variables, and reduce the number of variables with minimal data loss. This method also allows us to avoid multiple comparisons in our analysis and maintain statistical power, compared to other variable-selection methods.  
+PCA was performed on the 40 breath sensor variables. The first variable created by PCA accounted for 70% of sensor data variance, the second accounted for another 10%.    
+A full description of the Principal Component Analysis can be found [here](#PCA).  
+
+It can be argued that out of the 40 features (8 sensors, 5 features per sensor) there may have been one that was strongly correlated to anxiety measures and was overlooked.  
+Conducting 40 statistical tests would have reduced our statistical power. The more features we test, the larger the probability that a random fluctuation is misclassified as a meaningful result. Our PCA variables represent 80% of the variance in the breath sensor data, and if such a feature exists, its likely that its variance will be represented in the PCA-created breath variables, breath1 and breath2.
+
+# Sample description
+The intervention and the control groups were compared across socio-demographic and clinical characteristics. As can be expected in a small sample, continuous variables (age and years of education) were not normally distributed. Wilcoxon tests (the non-parametric equivalent of t-test) were applied to test the differences between the groups. Fisher's exact test was used for categorical variables, also due to the small sample size.
+
+```{r }
+library(table1)
+t1<-data[!duplicated(data$id),]
+
+label(t1$birth_place)<-"Place of birth"
+label(t1$married)<-"Married"
+label(t1$education)<-"Education (years)"
+label(t1$employed)<-"Employed"
+label(t1$military)<-"Military service"
+label(t1$panic)<-"History of a panic attack"
+label(t1$family_history)<-"Family history of mental illness"
+
+adata<-data%>%filter(Stage=="A")
+
+pvalue <- function(x, ...) {
+  # Construct vectors of data y, and groups (strata) g
+  y <- unlist(x)
+  g <- factor(rep(1:length(x), times=sapply(x, length)))
+  if (is.numeric(y)) {
+    # For numeric variables, perform a standard 2-sample t-test
+    p <- wilcox.test(y ~ g)$p.value
+  } else {
+    # For categorical variables, perform a fisher's exact test of independence
+    p <- fisher.test(table(y, g))$p.value
+  }
+  # Format the p-value, using an HTML entity for the less-than sign.
+  # The initial empty string places the output on the line below the variable label.
+  c("", sub("<", "&lt;", format.pval(p, digits=3, eps=0.001)))
+}
+
+#fisher's test!
+table1(~ Gender+Age+birth_place+married+education+employed+military+panic+family_history
+       |Group, data=t1, overall=F, caption="Socio-demographic characteristics, by group", extra.col=list(`P-value`=pvalue))
+```
+
+There was a statistically significant difference in **education** between groups (mean 14.7 years in the stress group vs. 13.2 years in the control group, p-value=0.03).  
+The difference in mean age was not statistically significant, but it is notable that the distributions are different. This is further discussed in [Study limitations].
+
+```{r fig.height=3, fig.width=6, fig.cap="Distribution of socio-demographic characteristics by group"}
+#par(mfrow=c(1,2))
+#gghistogram(adata, x = "Age",
+ #  add = "mean", rug = TRUE,
+  # color = "Group", fill = "Group", bins=10,
+   #palette = c("#00AFBB", "#E7B800"))
+
+g1<-ggdensity(adata, x = "Age", add = "mean", rug = TRUE,
+              color = "Group", fill = "Group",
+              palette = c("#00AFBB", "#E7B800"))+xlab("Age (years)")+
+  theme(axis.text.y = element_blank())
+
+g2<-ggdensity(adata, x = "education", add = "mean", rug = TRUE,
+              color = "Group", fill = "Group",
+              palette = c("#00AFBB", "#E7B800"))+xlab("Education (years)")+theme(axis.text.y = element_blank())
+#par(mfrow=c(1,1))
+grid.arrange(g1, g2, ncol=2)
+```
+
+All other socio-demographic characteristics were similar in both groups.  
+Most of the participants were female (58%). Our study's cohort was young- the age range was 18-35 years (mean and median age= 25 years). understandably, only 11.5% were married and only 38.5% were employed. The median for years of education was 12.5 (range 11-22 years).  
+77% of participants were born in Israel and 70% served in the military.
+Two participants had a history of a panic attack and one participant had a family history of mental illness.
+
+## Summary
+Except for education, which was higher in the stress group (14.7 years vs. 13.2), the intervention group and the control group had similar socio-demographic characteristics.  
+There were more female participants (58%), the age range was 18-35 years (mean and median=25 years). Most of participants had at least high school education (range: 11-22 years of education). Family or personal history of mental health issues was noted for 3 participants out of 26.
+
+# Baseline differences between groups {#baseline}
+The intervention group and the control group were compared across baseline values of anxiety measures and biomarkers using Wilcoxon tests.
+
+## Anxiety measures
+
+```{r }
+#anxiety baseline characteristics
+adata$trait10<-adata$trait*10
+table1(~ trait10+statet+vast
+       | Group, data=adata, overall=F, extra.col=list(`P-value`=pvalue), caption= "Baseline anxiety measures by group")
+
+#ggplot(adata, aes(y=vas, color=Group))+geom_boxplot()
+
+```
+
+**State and VAS anxiety** were similar for the stress and the control group (p-value=0.76 and 0.78).  
+**Trait anxiety** was lower in the stress group compared to the control group (34.6 vs. 41), the difference was statistically significant (p-value=0.034).   
+
+```{r fig.height=3, fig.width=5, fig.cap="Distribution of Trait anxiety by group"}
+
+ggdensity(adata, x = "trait10", add = "mean", rug = TRUE,
+              color = "Group", fill = "Group",
+              palette = c("#00AFBB", "#E7B800"))+xlab("Trait anxiety score")+theme(axis.text.y = element_blank())
+
+```
+
+This basic difference in trait anxiety can influence our analysis. More on this in the [Study limitations] section.
+
+## Breath biomarkers and HRV
+Breath biomarkers, mean heart rate and heart rate variability were also compared at baseline:
+
+```{r}
+label(t1$cvnn)<-"Heart rate variability"
+#testing breath and rate
+table1(~ heart_rate+cvnn+breath1+breath2
+       | Group, data=t1, overall=F, extra.col=list(`P-value`=pvalue),
+       caption= "Baseline biomarkers by group")
+```
+
+There were no statistically significant differences in heart rate and breath variables between groups. However, their distributions were not the same.  
+
+```{r fig.height=3, fig.width=6, fig.cap="Distribution of heart rate and breath variables by group"}
+#par(mfrow=c(2,2))
+g1<-ggdensity(adata, x = "cvnn", add = "mean", rug = TRUE,
+              color = "Group", fill = "Group",
+              palette = c("#00AFBB", "#E7B800"))+xlab("Heart rate variability")+theme(axis.text.y = element_blank())
+g2<-ggdensity(adata, x = "heart_rate", add = "mean", rug = TRUE,
+              color = "Group", fill = "Group",
+              palette = c("#00AFBB", "#E7B800"))+xlab("Mean heart rate")+
+  theme(axis.text.y = element_blank())
+g3<-ggdensity(adata, x = "breath1", add = "mean", rug = TRUE,
+              color = "Group", fill = "Group",
+              palette = c("#00AFBB", "#E7B800"))+xlab("Breath1")+
+  theme(axis.text.y = element_blank())
+g4<-ggdensity(adata, x = "breath2", add = "mean", rug = TRUE,
+              color = "Group", fill = "Group",
+              palette = c("#00AFBB", "#E7B800"))+xlab("Breath2")+
+  theme(axis.text.y = element_blank())
+#par(mfrow=c(1,1))
+grid.arrange(g1, g2, g3, g4, ncol=2, nrow=2)
+```
+
+This is also discussed in [Study limitations].
+
+### Summary
+**Trait anxiety** was lower in the stress group compared to the control group (34.6 vs. 41, p-value=0.034). State and VAS anxiety, mean heart rate, heart rate variability and breath variables had no statistically significant difference between groups at baseline.
+
+## Correlational patterns of biomarkers in stages A and B {#correlational_patterns}
+To investigate the correlations between breath sensor variables **cluster analysis** was performed. Similar variables were clustered together to identify primary correlations and detect redundancy. In both the stress and the control group two distinct clusters emerged: Slope features and all the rest.   
+The **slope feature** describes the increase in biochemical concentration in the air immediately after exhalation, normalized by baseline level. The slope features cluster had more variance when comparing the stress and the control group, so our exploratory analysis of correlational patterns focused on the slope features of the 8 breath sensors. 
+
+### Stage A
+The correlations between the 8 breath sensors (S1-S8) in stage A are plotted below, by group (each sensor is represented by its slope feature).
+
+```{r fig.height=4,  fig.width=7, fig.cap="Breath sensors by group at stage A"}
+
+#nor <-function(x) { (x -min(x))/(max(x)-min(x))   }
+#library(corrplot)
+#creating a df with 8 aUC features from stage A
+#br_adata<-br_data%>%filter(Stage=="A")%>%select(c(3,4,9,14,19,24,29,34,39))#AUC
+br_adata<-br_data%>%filter(Stage=="A")%>%select(c(3,8,13,18,23,28,33,38,43))#Slope
+colnames(br_adata) <- c("Group", "S1", "S2", "S3", "S4", "S5", "S6", "S7", "S8")
+sadata<-br_adata%>%filter(Group=="Stress")#%>%select(-Group)%>%nor()
+cadata<-br_adata%>%filter(Group=="Control")#%>%select(-Group)%>%nor()
+
+#br_bdata<-br_data%>%filter(Stage=="B")%>%select(c(3,4,9,14,19,24,29,34,39))#AUC
+br_bdata<-br_data%>%filter(Stage=="B")%>%select(c(3,8,13,18,23,28,33,38,43))#slope
+colnames(br_bdata) <- c("Group", "S1", "S2", "S3", "S4", "S5", "S6", "S7", "S8")
+sbdata<-br_bdata%>%filter(Group=="Stress")
+cbdata<-br_bdata%>%filter(Group=="Control")
+
+par(mfrow = c(1, 2))
+#Stage A
+M1 <- cor(sadata[,2:9], use="pairwise.complete.obs")
+corrplot.mixed(M1, upper="ellipse", addrect = 2,main="Stress group at stage A",mar=c(0,0,2,0))
+
+M2 <- cor(cadata[, 2:9], use="pairwise.complete.obs")
+corrplot.mixed(M2, upper="ellipse", addrect = 2,main="Control group at stage A",mar=c(0,0,2,0))
+
+par(mfrow = c(1, 1))
+```
+
+We can see that the sensors are highly inter-correlated, with most correlations' absolute value greater than 0.7. The 3rd sensor (S3) is negatively correlated to the rest (its correlations to the others are colored red), which are all positively inter-correlated. Sensor 8 has weaker correlations to other sensors.     
+Overall, the inter-correlations are similar in the stress and the control group. The stress group has slightly stronger correlations in most cases.
+
+### Stage B
+The same correlations were plotted for stage B.
+
+```{r fig.height=4,  fig.width=7, fig.cap="Breath sensors by group at stage B"}
+#Stage B
+par(mfrow = c(1, 2))
+
+M3 <- cor(sbdata[, 2:9], use="pairwise.complete.obs")
+#corrplot.mixed(M1, upper="ellipse", addrect = 2,main="Stress group at stage A",mar=c(0,0,2,0))
+corrplot.mixed(M3, upper="ellipse", addrect = 2,main="Stress group at stage B",mar=c(0,0,2,0))
+
+M4 <- cor(cbdata[, 2:9], use="pairwise.complete.obs")
+corrplot.mixed(M4, upper="ellipse", addrect = 2,main="Control group at stage B",mar=c(0,0,2,0))
+
+#breath1 and breath2, rate and breath2 are more correlated for the control group
+par(mfrow = c(1, 1))
+#grid.arrange(g1, g2, ncol=2)
+```
+
+When **comparing the groups** at stage B, in the stress group sensors S1-S5 are less correlated to the others and sensors S6-S8 are more correlated to the others, compared to the control group.  
+
+when **comparing stages A and B**, in the **stress group** correlations weakened for S1-S4 and strengthened for s5-S8. In the **control group** the correlations strengthened for S1-S5 and weakened for S6-S8. 
+
+### Summary
+Correlational patterns of breath sensors in stage A and B were compared for the stress and the control group.  
+When comparing stages A and B, in the **stress group** correlations weakened for S1-S4 and strengthened for s5-S8. In the **control group** the correlations strengthened for S1-S5 and weakened for S6-S8.  
+This may imply that an increase in anxiety might be marked by a decrease in the correlations between sensors' slope for sensors S1-S4 and an increase for sensors S5-S8. It should be emphasized that the differences are small and may not be statistically significant. In addition, these findings are based on sample sizes of 14 and 12 participants and may have appeared at random.   
+
+# Dynamics of biomarkers and anxiety measures, by group 
+We tested how biomarkers and anxiety measures fluctuated over the course of the study, and compared the intervention and the control group. 
+
+## Statistical methods
+Analysis was performed using linear mixed models, which are suitable for longitudinal and hierarchical data. Since we have a relatively small sample size, we used parsimonious models with as little effects as possible, not to use up degrees of freedom.   
+Random effects and data grouping were chosen using **Intra-Class Correlation coefficient (ICC)**. ICC measures how strongly observations in the same group resemble each other, and It can guide us in the decision on how to group our data. ICC ranges between 0 and 1 and the higher the ICC, the better the grouping variable explains the variance of the outcome. The highest ICC was obtained with grouping by participant.  
+We tested the hypothesis that there is a difference between groups using contrasts (comparing outcome's level at stage B, C or D vs. Stage A). Tukey method was used to adjust the p-value for multiple comparisons.  
+Our analysis was based on 104 observations from 26 participants. Most of our outcome variables were non-normally distributed. Analysis was performed on both the transformed and the original variable. The results were similar and the non-transformed models are presented for simplicity. Models' assumptions were met.
+
+## VAS anxiety {#vas_anxiety_d}
+Let's first look at the participants' VAS anxiety trend lines, by group.  
+The average trend is marked in blue dots.
+
+```{r fig.height = 4, fig.width =7, fig.cap="VAS anxiety dynamics by group"}
+ggplot(data, aes(x = Stage, y = vas, group=id)) +geom_point()+
+  geom_line() +stat_summary(aes(group = 1), geom = "point", fun.y = mean,
+                               shape = 19, size = 3,color="blue")+ geom_smooth(group=1,span=0.8)+facet_grid(.~Group)+ylab("VAS anxiety")
+```
+
+As expected, in the **stress group**, VAS anxiety increased in stage B and decreased afterwards.  
+In the **control group**, VAS anxiety decreased gradually from stage A to stage D.  
+
+In order to test the dynamics of VAS anxiety over the 4 stages of the study with a comparison between groups, a mixed model was used. The mixed model contained a random intercept with grouping by participant and an interaction between group and stage.  
+The model's assumptions were met, a description of model's assumptions' testing can be found [here](#VAS_anxiety_model_assumptions). 
+
+```{r}
+m<-lmer(vas~ Group*Stage+(1|id),data=data, REML = T)
+sjPlot::tab_model(m, show.ci=FALSE, show.re.var=FALSE, show.obs=FALSE, show.ngroups=FALSE, title="VAS anxiety by stage and group")
+```
+
+The ICC is 0.78, which means that 78% of the variance of VAS anxiety is explained by the participant grouping.   
+The interaction between Stage and Group is statistically significant for stage B, meaning that in this stage there was a statistically significant difference in VAS anxiety between the control and stress groups. The dynamics of VAS anxiety for the 2 groups are described in the following plot.
+
+```{r fig.height = 3, fig.width = 5, fig.caption="VAS anxiety by stage and group"}
+
+mylist <- list(Stage=c("A", "B", "C", "D"), Group=c("Stress", "Control"))
+emmip(m, Group ~Stage, at=mylist,CIs=TRUE)+ylab("VAS anxiety")+xlab("Stage")
+```
+
+In **stage A** Both groups had practically the same VAS level.  
+In **stage B**, during the stressful task, the stress group had an increase in VAS anxiety and the control group had a decrease in VAS anxiety. The confidence intervals have no overlap, and the difference between the groups in this stage is significant.   
+In **stage C**, 30 minutes after the stressful task, both groups show a decrease in VAS anxiety, the confidence intervals overlap.       
+In **stage D**, 60 minutes after the stressful task, there seems to be an additional decrease in VAS anxiety, and the confidence intervals overlap. 
+
+### Group comparison
+We will explore this interaction further and test the hypotheses regarding the differences between the groups with post-hoc analysis of contrasts.
+
+```{r}
+em <- emmeans(m, ~ Group*Stage)
+cont<-as.data.frame(pairs(em, by = c("Stage"), adjust="tukey"))
+cont<-cont%>%select(-c("df"))
+knitr::kable(cont, align="l", row.names=FALSE,caption="Stress and control group comparison by stage", digits=2)
+
+```
+
+The 2 groups had a statistically significant difference in VAS anxiety only in stage B (p-value=0.01), with an estimate of 26.9 (SE=9.07), meaning the the stress group's VAS anxiety value was higher by 27 units in the VAS anxiety scale compared to the control group.  
+In stages A, C and D there were no statistically significant differences between the groups. 
+
+### Stage comparison
+We will now test the hypotheses that there were differences in VAS anxiety levels in stages B, C and D compared to baseline levels for each group.   
+
+```{r}
+em <- emmeans(m, ~ Group*Stage)
+cont<-pairs(em, by = c("Group"))%>%as.data.frame()%>%select(-c(2,5))
+s_cont<-cont[1:3,]
+c_cont<-cont[7:9,]
+cdf<-cbind(s_cont, c_cont[,2:5])
+
+#knitr::kable(s_cont, align="l", row.names=FALSE,caption="Stress group: VAS anxiety #Contrasts", digits=2)
+#knitr::kable(c_cont, align="l", row.names=FALSE,caption="Control group: VAS anxiety #Contrasts", digits=2)
+knitr::kable(cdf, align="l", row.names=FALSE,caption="Contrasts by stage, vs. baseline", digits=2)%>%add_header_above(c(" " = 1, "Stress group" = 4, "Control group" = 4))
+```
+
+For the **stress group**, in stage B there was a statistically significant increase in VAS anxiety compared to the baseline (p-value=0.007, est=13.8).   
+Stages C and D had no statistically significant difference from baseline (p-value=0.67 and 0.29 respectively). This means that during the stressful task VAS anxiety increased by 14 units in the VAS scale, and then returned to baseline levels in stages C and D.  
+
+For the **control group**, stage B was similar to stage A (p-value=0.21), but stages C and D had a statistically significant decrease in VAS anxiety (est=-13.8 and -16.6 respectively, SE=4.5). This means that VAS anxiety levels were similar in stages A and B and decreased gradually in stages C and D (by 14 and 17 units respectively, relative to baseline).  
+
+### Summary
+The stress group had a significantly higher VAS anxiety levels in **stage B**, compared to the control group (est=26.9, SE=9.07).   
+In the **stress group**, during the stressful task VAS anxiety increased, and then returned to baseline levels in stages C and D.   
+In the **control group**, VAS anxiety remained the same as the baseline in stage B, and decreased gradually in stages C and D.  
+
+## State anxiety {#state_anxiety_d} 
+The participants' State anxiety trend lines are very similar to the ones we saw for VAS anxiety. The average trend is marked in blue dots.
+
+```{r fig.height = 4, fig.width =7, fig.cap="State anxiety dynamics by group"}
+ggplot(data, aes(x = Stage, y = state, group=id)) +geom_point()+
+  geom_line() +stat_summary(aes(group = 1), geom = "point", fun.y = mean,
+                               shape = 19, size = 3,color="blue")+ geom_smooth(group=1,span=0.8)+facet_grid(.~Group)+ylab("State anxiety")
+```
+
+In the **stress group**, State anxiety increased in stage B and decreased afterwards.  
+In the **control group**, State anxiety decreased gradually from stage A to stage D.  
+
+In order to test the dynamics of State anxiety over the 4 stages of the study with a comparison between groups, a mixed model was used. The mixed model contained a random intercept with grouping by participant and an interaction between group and stage. The model's assumptions were [met](#State_anxiety_model_assumptions).
+
+```{r}
+m<-lmer(state~ Group*Stage+(1|id),data=data, REML = T)
+sjPlot::tab_model(m, show.ci=FALSE, show.re.var=FALSE, show.obs=FALSE, show.ngroups=FALSE, title="State anxiety by stage and group")
+```
+
+The ICC is 0.73, which means that 73% of the variance of the State anxiety is explained by the participant grouping.  
+The interaction between Stage and Group is statistically significant for stages B and D, meaning that in these stages there was a statistically significant difference in State anxiety between control and stress groups. The dynamics of State anxiety for the 2 groups are described in the following plot.
+
+
+```{r fig.height = 3, fig.width = 5, fig.caption="State anxiety by stage and group"}
+
+mylist <- list(Stage=c("A", "B", "C", "D"), Group=c("Stress", "Control"))
+emmip(m, Group ~Stage, at=mylist,CIs=TRUE)+ylab("State anxiety")+xlab("Stage")
+```
+
+Both groups had the same baseline State anxiety level.  
+In **stage B**, during the stressful task, the stress group had an increase in State anxiety and the control group had a decrease in State anxiety. The confidence intervals have minimal overlap, and the difference between the groups in this stage may be statistically significant.   
+In **stage C**, both groups show a decrease in State anxiety. The confidence intervals overlap, and there seems to be little difference between the groups.     
+In **stage D**, there is an additional decrease in State anxiety for the control group and a slight increase for the stress group, and the confidence intervals overlap.
+
+### Group comparison
+We will explore this interaction further and test the hypotheses regarding the differences between the groups with post-hoc analysis of contrasts.
+
+```{r}
+em <- emmeans(m, ~ Group*Stage)
+cont<-as.data.frame(pairs(em, by = c("Stage"), adjust="tukey"))
+cont<-cont%>%select(-c("df"))
+knitr::kable(cont, align="l", row.names=FALSE,caption="Stress and control group comparison by stage", digits=2)
+
+```
+
+The 2 groups had a statistically significant difference in State anxiety only in **stage B** (p-value=0.01), with an estimate of 10.1 (SE=3.95), meaning that in stage B the stress group's State anxiety value was higher by 10 units in the State anxiety scale compared to the control group.  
+
+### Stage comparison
+We will now test the hypotheses that there were differences in State anxiety levels in stages B, C and D compared to baseline levels in both groups.   
+
+```{r}
+em <- emmeans(m, ~ Group*Stage)
+cont<-pairs(em, by = c("Group"))%>%as.data.frame()%>%select(-c(2,5))
+s_cont<-cont[1:3,]
+c_cont<-cont[7:9,]
+cdf<-cbind(s_cont, c_cont[,2:5])
+
+knitr::kable(cdf, align="l", row.names=FALSE,caption="Contrasts by stage, vs. baseline", digits=2)%>%add_header_above(c(" " = 1, "Stress group" = 4, "Control group" = 4))
+```
+
+For the **stress group**, there were no statistically significant changes compared to the baseline (p-value=0.08, 0.7 and 0.93 for stages B, C and D). 
+
+For the **control group**, stage B was similar to stage A (p-value=0.23). Stages C and D had a statistically significant decrease in State anxiety (est= -6.3 and -7 respectively, SE=2.1). This means that State anxiety levels were similar in stages A and B and decreased gradually in stages C and D.  
+
+### Summary
+The stress group had a significantly higher State anxiety levels in **stage B**, compared to the control group (est=10.1, SE=3.95).   
+In the **stress group**, there were no statistically significant changes in State anxiety when comparing stages B, C and D to stage A.  
+In the **control group**, State anxiety remained the same as the baseline in stage B, and decreased gradually in stages C and D.  
+
+## Heart rate variability {#hrv_d}
+We'll start by plotting the participants' HRV trend lines, by group. The average trend is marked in blue dots.
+
+```{r fig.height = 4, fig.width =7, fig.cap="HRV dynamics by group"}
+ggplot(data, aes(x = Stage, y = cvnn, group=id)) +geom_point()+
+  geom_line() +stat_summary(aes(group = 1), geom = "point", fun.y = mean,
+                               shape = 19, size = 3,color="blue")+ geom_smooth(group=1,span=0.8)+facet_grid(.~Group)+ylab("HRV")
+```
+
+In the **stress group**, HRV increased in stage B, which appears counter-intuitive at first as heart rate variability is known to decrease in stressful situations. On the other hand, higher HRV is also associated with performance of executive functions and prefrontal cortex activity, which are required in the Trier Social Stress Test.       
+HRV was slightly decreased in stage C and increases in stage D, to a higher level compared to the baseline.  
+In the **control group**, HRV increased gradually from stage A to stage D, which is as expected.  
+It is also notable that HRV variance seems larger in the stress group compared to the control group.   
+Overall, the trends in the stress and the control group are similar, and we may not find any statistically significant difference between the groups.  
+
+In order to test the dynamics of HRV over the 4 stages of the study with a comparison between groups, a mixed model was used. The mixed model contained a random intercept with grouping by participant and an interaction between group and stage. The model's assumptions were [met](#HRV_model_assumptions).
+
+```{r}
+m<-lmer(cvnn~ Group*Stage+(1|id),data=data, REML = T)
+sjPlot::tab_model(m, show.ci=FALSE, show.re.var=FALSE, show.obs=FALSE,show.ngroups=FALSE,
+          title="HRV by stage and group")
+```
+
+The ICC is 0.48, which means that 48% of the variance of HRV is explained by the participant grouping. The stage and group increased the proportion of explained variance to 53% ($R^2$=0.53), and there seems to be other factors influencing HRV's variance, which are out of the scope of this analysis.   
+The interaction between Stage and Group was not statistically significant for stages B, C or D, meaning that there was no difference between the groups' HRV in these stages. The dynamics of HRV for the 2 groups are described in the following plot.
+
+
+```{r fig.height = 3, fig.width = 5, fig.cap="HRV by stage and group"}
+
+mylist <- list(Stage=c("A", "B", "C", "D"), Group=c("Stress", "Control"))
+emmip(m, Group ~Stage, at=mylist,CIs=TRUE)+ylab("HRV")+xlab("Stage")
+```
+
+The confidence intervals overlap considerably, meaning that the difference between the groups are not statistically significant. 
+
+### Group comparison
+This conclusion is confirmed in a post-hoc analysis, comparing stress and control groups by stage. No statistically significant difference between groups was found for all stages. 
+
+```{r}
+em <- emmeans(m, ~ Group*Stage)
+cont<-as.data.frame(pairs(em, by = c("Stage"), adjust="tukey"))
+cont<-cont%>%select(-c("df"))
+knitr::kable(cont, align="l", row.names=FALSE,caption="Stress and control group comparison by stage", digits=2)
+
+```
+
+### Stage comparison
+We will now test the hypotheses that there were differences in HRV levels in stages B, C and D compared to baseline levels for each group.   
+
+```{r}
+em <- emmeans(m, ~ Group*Stage)
+cont<-pairs(em, by = c("Group"))%>%as.data.frame()%>%select(-c(2,5))
+s_cont<-cont[1:3,]
+c_cont<-cont[7:9,]
+cdf<-cbind(s_cont, c_cont[,2:5])
+
+knitr::kable(cdf, align="l", row.names=FALSE,caption="Contrasts by stage, vs. baseline", digits=2)%>%add_header_above(c(" " = 1, "Stress group" = 4, "Control group" = 4))
+```
+
+For the **stress group**, compared to stage A, there was a statistically significant increase in HRV in stage B (est= 0.11, SE=0.03, p-value=0.01) and D (est=0.09, SE=0.03, p-value=0.04). Stage C was similar to stage A (p-value=0.18).       
+For the **control group**, stages B and C were similar to stage A (p-value=0.85 and 0.78). In Stage D there was a borderline p-value of 0.06, and since we have a small sample it should be noted. The estimate indicates an increase in HRV in stage D (est=0.09, SE= 0.03).  
+
+### Summary
+There was no statistically significant difference in HRV between the stress group and the control group.  
+The **stress group** had a statistically significant increase in HRV in stages B and D (est=0.11 and 0.09, SE=0.03).  
+The **control group** had a borderline significant increase in HRV in stage D (p-value= 0.06, est=0.09, SE=0.03)
+
+## Mean heart rate {#mean_hr_d}
+We'll look at the participants' mean HR trend lines, by group. The average trend is marked in blue dots.
+
+```{r fig.height = 4, fig.width =7, fig.cap="Mean heart rate dynamics by group"}
+ggplot(data, aes(x = Stage, y = heart_rate, group=id)) +geom_point()+
+  geom_line() +stat_summary(aes(group = 1), geom = "point", fun.y = mean,
+                               shape = 19, size = 3,color="blue")+ geom_smooth(group=1,span=0.8)+facet_grid(.~Group)+ylab("Mean heart rate")
+```
+
+Both trends suit our expectation of a direct association between heart rate and anxiety:   
+In the **stress group**, mean HR was high in stages A and B and declined gradually afterwards.  
+In the **control group**, mean HR decreased gradually from stage A to stage D.  
+It is also notable that mean HR variance was larger in the stress group compared to the control group.     
+
+In order to test the dynamics of mean HR over the 4 stages of the study with a comparison between groups, a mixed model was used. The mixed model contained a random intercept with grouping by participant and an interaction between group and stage. The model's assumptions were [met](#Mean_HR_model_assumptions).
+
+```{r}
+m<-lmer(heart_rate~ Group*Stage+(1|id),data=data, REML = T)
+sjPlot::tab_model(m, show.ci=FALSE, show.re.var=FALSE, show.obs=FALSE, show.ngroups=FALSE, title="Mean HR by stage and group")
+```
+
+The ICC is 0.75, which means that 75% of the variance of mean HR is explained by the participant grouping.  
+The interaction between Stage and Group was statistically significant for stage B, meaning that there was a statisticaly significant difference between the groups' mean HR in this stage. The dynamics of mean HR for the 2 groups are described in the following plot.
+
+```{r fig.height = 3, fig.width = 5, fig.cap="Mean HR by stage and group"}
+
+mylist <- list(Stage=c("A", "B", "C", "D"), Group=c("Stress", "Control"))
+emmip(m, Group ~Stage, at=mylist,CIs=TRUE)+ylab("mean HR")+xlab("Stage")
+```
+
+We can see the same trends we saw earlier:   
+In the **stress group** mean HR was high in stages A and B and declined in stages C and D.   
+In the **control group** there was a gradual decline in mean HR.   
+The confidence intervals overlap, so we will proceed to testing the hypotheses regarding differences between groups and stages with post-hoc analysis.
+
+### Group comparison
+
+```{r}
+em <- emmeans(m, ~ Group*Stage)
+cont<-as.data.frame(pairs(em, by = c("Stage"), adjust="tukey"))
+cont<-cont%>%select(-c("df"))
+knitr::kable(cont, align="l", row.names=FALSE,caption="Stress and control group comparison by stage", digits=2)
+
+```
+
+The 2 groups had a statistically significant difference in State anxiety only in **stage B**, with an estimate of 9 (SE=3.65, p-value=0.02). This means that in stage B the stress group's mean HR was higher by 9 beats per minute compared to the control group's.  
+
+### Stage comparison
+We will now test the hypotheses that there were differences in mean HR levels in stages B, C and D compared to baseline levels for each group.   
+
+```{r}
+em <- emmeans(m, ~ Group*Stage)
+cont<-pairs(em, by = c("Group"))%>%as.data.frame()%>%select(-c(2,5))
+s_cont<-cont[1:3,]
+c_cont<-cont[7:9,]
+cdf<-cbind(s_cont, c_cont[,2:5])
+
+knitr::kable(cdf, align="l", row.names=FALSE,caption="Contrasts by stage, vs. baseline", digits=2)%>%add_header_above(c(" " = 1, "Stress group" = 4, "Control group" = 4))
+```
+
+For the **stress group**, Stage B was similar to stage A (p-value=1). Compared to stage A, there was a statistically significant decrease in mean HR in stage C (est= -6.9, SE=1.7, p-value=0.001) and D (est=-8.9, SE=1.7, p-value<0.001).  
+For the **control group**, there was a statistically significant decrease in mean HR compared to baseline in each stage (est=-5.9, -9.5 and -12 for B, C and D, SE=1.9).
+
+### Summary
+The stress group had a significantly higher mean HR in **stage B**, compared to the control group (est=9, SE=3.65).   
+In the **stress group**, mean HR was the same in stages A and B and had a statistically significant decline in stages C and D.   
+In the **control group**, mean HR had a statistically significant gradual decline from stage A to D.
+
+## Breath biomarkers {#breath1_d}
+The dynamics of breath1 and breath2, our breath sensors' variables, were plotted by participant and group. The average trend is marked in blue dots.  
+
+
+```{r fig.height = 4, fig.width =7, fig.cap="Breath1 dynamics by group"}
+ggplot(data, aes(x = Stage, y = breath1, group=id)) +geom_point()+
+  geom_line() +stat_summary(aes(group = 1), geom = "point", fun.y = mean,
+                               shape = 19, size = 3,color="blue")+ geom_smooth(group=1,span=0.8)+facet_grid(.~Group)+ylab("Breath1")
+```
+
+At a first glance at the trends of breath1 there is a lot of variance (especially in the stress group) and both trends look similar overall. Thus, we may not find a statistically significant difference between the groups.  
+
+For breath2 the trends are almost identical:
+
+```{r fig.height = 4, fig.width =7, fig.cap="Breath2 dynamics by group"}
+ggplot(data, aes(x = Stage, y = breath2, group=id)) +geom_point()+
+  geom_line() +stat_summary(aes(group = 1), geom = "point", fun.y = mean,
+                               shape = 19, size = 3,color="blue")+ geom_smooth(group=1,span=0.8)+facet_grid(.~Group)+ylab("Breath2")
+```
+
+We will focus our analysis on breath1.  
+
+In order to test the dynamics of breath1 over the 4 stages of the study with a comparison between groups, a mixed model was used. The mixed model contained a random intercept with grouping by participant and an interaction between group and stage. The model's assumptions were [met](#Breath1_model_assumptions).
+
+```{r}
+m<-lmer(breath1~ Group*Stage+(1|id),data=data, REML = T)
+sjPlot::tab_model(m, show.ci=FALSE, show.re.var=FALSE, show.obs=FALSE, show.ngroups=FALSE, title="Breath1 by stage and group")
+```
+
+The ICC is 0.58, which means that 58% of the variance of the breath1 is explained by the participant grouping.       
+The interaction between Stage and Group is not statistically significant for stages B, C or D, meaning that there was no statistically significant difference in breath1 between control and stress groups in stages B, C or D, compared to stage A. The dynamics of breath1 for the 2 groups are described in the following plot.
+
+```{r fig.height = 3, fig.width = 5, fig.cap="breath1 by stage and group"}
+#m<-lmer(breath1~ Group*Stage+(1|id),data=data, REML = T)
+mylist <- list(Stage=c("A", "B", "C", "D"), Group=c("Stress", "Control"))
+emmip(m, Group ~Stage, at=mylist,CIs=TRUE)+ylab("Breath1")+xlab("Stage")
+```
+
+The confidence intervals overlap considerably, meaning that the differences between the groups are not statistically significant. 
+
+### Group comparison
+Post-hoc analysis, testing the hypotheses regarding difference between groups by stage, confirmed our conclusion of no statistically significant difference between groups.
+
+```{r}
+em <- emmeans(m, ~ Group*Stage)
+cont<-as.data.frame(pairs(em, by = c("Stage"), adjust="tukey"))
+cont<-cont%>%select(-c("df"))
+knitr::kable(cont, align="l", row.names=FALSE, caption="Stress and control group comparison by stage", digits=2)
+
+```
+
+### Stage comparison
+We will now test the hypotheses that there were differences in breath1 levels in stages B, C and D compared to baseline levels for both groups.   
+
+```{r}
+em <- emmeans(m, ~ Group*Stage)
+cont<-pairs(em, by = c("Group"))%>%as.data.frame()%>%select(-c(2,5))
+s_cont<-cont[1:3,]
+c_cont<-cont[7:9,]
+cdf<-cbind(s_cont, c_cont[,2:5])
+
+knitr::kable(cdf, align="l", row.names=FALSE,caption="Contrasts by stage, vs. baseline", digits=2)%>%add_header_above(c(" " = 1, "Stress group" = 4, "Control group" = 4))
+```
+
+For both groups there was no statistically significant difference in breath1 in stages B, C or D compared to stage A. This means that breath1 remained the same during the study for both groups.  
+
+In an attempt to overcome the limitations of the small sample, **bootstrapping** was used for hypotheses testing. Bootstrapping is a non-parametric method, in which the data set is sampled with replacement many times to create many simulated samples.  
+We sampled our data set 1,000 times, the difference in means was calculated, and a 95% confidence interval was constructed based on the 1,000 samples. Using this statistical method, the same results were obtained, and the null hypotheses could not be rejected. No statistically significant difference was found between groups in each stage and between stages for each group, compared to baseline.  
+The same results were obtained for variable breath2.  
+
+### Summary
+There was no statistically significant difference in breath1 between groups in each stage or between baseline and stages B, C and D for each group.  
+A larger sample may provide more insight.
+
+## Conclusions
+As expected, **VAS and State anxiety** as well as **mean heart rate** were higher in the stress group in stage B compared to the control group, and declined gradually for both groups in stages C and D.  
+**Heart rate variability** showed no statistically significant difference between groups. Interestingly, it showed a significant increase in stage B for the stress group.  
+There was no statistically significant difference in **breath1** between groups in each stage or between baseline and stages B, C and D for each group.  
+A larger sample may provide more insight.
+
+# Prediction models for baseline data {#prediction_models}
+Prediction models for baseline heart rate variability and anxiety measures were fitted and tested, based on breath sensor data. A model for prediction of group assignment was also requested, but is unnecessary since participants were randomly assigned to stress/control groups.  
+Our baseline data set consisted of 26 observations, 14 in the stress groups and 12 in the control group.  
+
+## Model fitting
+Our small sample allowed no more than 2 predictors per model, or we would risk **over-fitting** (a modeling error in which the model fits too well to a specific data set but cannot generalize and make predictions for new data). For our models we used our 2 breath variables, which represent 80% of the breath sensor data. Scatter plots of our outcome variables vs. breath1 and breath2 were examined to detect possible linear or curvilinear correlations. No noticeable correlations were detected. Linear regression models yielded poor results. 
+
+### KNN model {#KNN_model}
+We proceeded to fitting prediction models with **K-Nearest Neighbor regression** (KNN).
+This supervised machine-learning algorithm searches the training set for the K most similar instances (the neighbors) and predicts the test set's outcome value based on the neighbors' outcome values. If our outcome is continuous, like VAS anxiety, the predicted outcome will be the average of the K-nearest neighbors' VAS anxiety values. If our outcome is categorical (group), the KNN classification model will predict by the most common class among the K-nearest neighbors. This method is well-suited for small samples and low-dimensionality data with no missing values. It is non-parametric, meaning that it does not make any assumptions on the data and transformations are not needed. The distance between neighbors was calculated using Euclidean distance, which is the most widely used technique.      
+
+### Cross-validation {#cross_validation}
+Our sample size is small, and it is particularly important to avoid over-fitting.   
+**Leave One out Cross-Validation (LOOCV)** is a cross-validation method that addresses over-fitting while using the largest amount of data possible for model training. One observation is picked as the test set, the model is trained using the remaining 25 observations and tested on the observation that was kept out. This process is repeated for each observation and the model's performance metrics are obtained.  
+
+## Performance evaluation {#Performance_evaluation}
+**RMSE** (Root Mean Squared Error) is a well accepted model comparison and evaluation measure. It is the square root of the variance of the residuals. It indicates how close the test data points are to the model’s predicted values. A lower value indicates a better fit.
+
+Since the KNN method includes normalization of all variables, the original variables were used, with no transformations or scaling. For each outcome, KNN models were fitted with k values ranging from 1 to 20. They were fitted and tested using Leave One Out cross-validation (LOOCV) and compared to find the k for which we have minimal RMSE.  
+Our best model's RMSE was compared to the RMSE of a **naive model**: a model whose predicted value is the average of the outcome variable in the training set, for any given test set (The naive model will have an RMSE that equals the outcome's standard deviation). If our model's RMSE is not lower than the outcome's standard deviation it is not better than guessing based on our outcome's average.
+
+```{r}
+adata<-data%>%filter(Stage=="A")
+#defining LOOCV method and normalization function
+train.control <- trainControl(method  = "LOOCV")
+nor <-function(x) { (x -min(x))/(max(x)-min(x))   }
+
+#ggplot(adata, aes(x=breath1))+geom_boxplot()#no outliers
+#ggplot(adata, aes(x=breath2))+geom_boxplot() # 3 outliers
+#adata$breath2[adata$breath2< -1]
+
+```
+
+## Results
+Linear models' $R^2$ and regression coefficients were negligible. This might be due to the small sample size (N=26), a small effect size of the breath variables, or there may not be an effect at all. 
+
+KNN regression models were fitted, cross-validated and their RMSE score was compared to the naive model (SD). The results are summarized in the table below (RMSE values that were lower than the respective SD are in bold).
+
+```{r}
+Outcome<-c("VAS anxiety", "State anxiety", "Trait anxiety", "HRV", "Mean HR")
+k<-c(2,3,6,4,12)
+RMSE<-c("**0.29**","**0.25**",0.24,"**0.26**", "**0.26**")
+SD<-c("0.30",0.26, 0.23, 0.27, 0.27)
+knitr::kable(cbind(Outcome, k, RMSE, SD), align="l", row.names=FALSE,caption="KNN models- stage A")
+```
+
+For Trait anxiety the KNN models based on breath1 and breath2 were not better than the naive model. For the other outcome variables, KNN models were slightly better- the RMSE was lower by 4% compared to guessing based on the outcome's average.
+
+## Conclusions
+For baseline data, breath KNN models were slightly better (by 4%) than guessing based on the outcome's average for VAS and State anxiety, HRV and mean heart rate (but not for Trait anxiety). 
+
+# Prediction models for stages B, C and D
+Prediction models for heart rate variability, anxiety measures and group assignment were fitted by stage. Data sets for each stage consisted of 26 observations, 14 in the stress groups and 12 in the control group. Breath sensor data and outcome variables were all corrected for their respective baseline values. 
+
+## Model fitting and evaluation methods
+Scatter plots of breath1 and breath2 vs. our outcome variables were plotted to detect possible linear or curvilinear correlations, but none were found. Outliers were identified, and model fitting was performed with and without outlier adjustment.  
+[**KNN classification algorithm**](#KNN_model) was used for categorical outcome (group), and [**KNN regression**](#KNN_model) was used for continuous outcomes (heart rate variability, mean heart rate, State, Trait and VAS anxiety).   
+[Leave One Out Cross-Validation](#cross_validation) was used to avoid over-fitting.
+KNN regression models were evaluated using [RMSE](#Performance_evaluation) and compared to the RMSE of a [naive model](#Performance_evaluation).  
+
+**KNN classification models** were used for group assignment prediction. They were compared and evaluated using the following metrics:   
+**Accuracy**- percent of correct predictions.  
+**Sensitivity**- a measure of the classifier's ability to correctly identify the stress class.    
+**Specificity**- a measure of the classifier's ability to correctly identify the control class.  
+
+## Stage B
+```{r}
+bdata<-data%>%filter(Stage=="B")
+bdata$cvnn_diff<-bdata$cvnn-adata$cvnn
+bdata$hr_diff<-bdata$heart_rate-adata$heart_rate
+bdata$vas_diff<-bdata$vas-adata$vas
+bdata$state_diff<-bdata$state-adata$state
+bdata$breath1_diff<-bdata$breath1-adata$breath1
+bdata$breath2_diff<-bdata$breath2-adata$breath2
+
+#ggplot(bdata, aes(x=breath1_diff))+geom_boxplot()
+
+#ggplot(bdata, aes(x=breath1))+geom_boxplot()
+#ggplot(cdata, aes(x=breath1))+geom_boxplot()#>-4
+#ggplot(ddata, aes(x=breath1))+geom_boxplot()
+
+```
+
+In Stage B the stress group performed the stressful task (preparing and performing a presentation, performing arithmetic calculations), while the control group was waiting. 
+
+### Anxiety and HRV
+KNN regression models were fitted, cross-validated and their RMSE score was compared to the naive model (SD). The results are summarized in the table below.
+
+```{r}
+Outcome<-c("VAS anxiety", "State anxiety", "Trait anxiety", "HRV", "Mean HR")
+k<-c(20, 10, 17, 15, 15)
+RMSE<-c("0.20",0.22,0.23,"0.20", 0.22)
+SD<-c("0.20",0.22,0.23,"0.20", 0.21)
+knitr::kable(cbind(Outcome, k, RMSE, SD), align="l", row.names=FALSE,caption="KNN models- stage B")
+```
+
+For VAS, State and Trait anxiety, HRV and mean HR the KNN models based on breath1 and breath2 were not better than the naive model, in stage B. This is not surprising, as the k values are high, meaning that the algorithm had to rely on a large proportion of the sample for prediction. 
+
+### Group assignment
+A logistic regression model yielded a very poor pseudo-R squared ($R^2$ Tjur=0.037).  
+We proceeded to fitting a KNN classification algorithm with Leave-One-Out Cross Validation.  
+The highest accuracy was obtained for k=1. 
+
+```{r}
+Accuracy<-c("73%")
+Sensitivity<-c("78.6%")
+Specificity<-c("66.7%")
+knitr::kable(cbind(Accuracy, Sensitivity, Specificity), align="l", row.names=FALSE,caption="Group classification model performance- stage B")
+```
+
+The model was able to predict whether the participant was in the stress or control group with an **accuracy** rate of **73%** by using breath data alone. Our model succeeded in predicting group assignment in the test data, meaning it is not over-fitted.  
+**Sensitivity and specificity** (79% and 67%) are pretty balanced (the algorithm does not lean towards increased sensitivity on the expense or lower specificity or vice versa). 
+
+### Summary
+Breath variables were not able to predict anxiety or heart rate variability measures in stage B. They were able to predict group assignment with 73% accuracy (sensitivity= 79%, specificity=67%). 
+
+## Stage C
+```{r}
+cdata<-data%>%filter(Stage=="C")
+#cdata$hr_diff<-cdata$heart_ratet-adata$heart_ratet
+cdata$cvnn_diff<-cdata$cvnn-adata$cvnn
+cdata$hr_diff<-cdata$heart_rate-adata$heart_rate
+cdata$state_diff<-cdata$state-adata$state
+cdata$vas_diff<-cdata$vas-adata$vas
+cdata$breath1_diff<-cdata$breath1-adata$breath1
+cdata$breath2_diff<-cdata$breath2-adata$breath2
+#adjusting outliers
+#cdata$breath1_diff[cdata$breath1_diff>10]<- 10
+#cdata$breath1_diff[cdata$breath1_diff< -10]<- -8
+#ggplot(cdata, aes(y=breath1_diff))+geom_boxplot()
+```
+
+In Stage C the groups were measured 30 minutes after the stress group completed the stressful task.  
+
+### Anxiety and HRV
+KNN regression models were fitted, cross-validated and their RMSE score was compared to the naive model (SD). The results are summarized in the table below.
+
+```{r}
+Outcome<-c("VAS anxiety", "State anxiety", "Trait anxiety", "HRV", "Mean HR")
+k<-c(16, 2, 15, 11, 16)
+RMSE<-c("0.20","**0.17**",0.23,0.23, 0.26)
+SD<-c(0.19,0.22,0.23,0.22, 0.26)
+knitr::kable(cbind(Outcome, k, RMSE, SD), align="l", row.names=FALSE,caption="KNN models- stage C")
+```
+
+KNN regression model for State anxiety performed better than the naive model by 23% (RMSE =0.17 vs. 0.22).  
+For VAS and Trait anxiety, HRV and mean HR the KNN models based on breath1 and breath2 were not better than the naive model, in stage C.
+
+### Group assignment
+A logistic regression model yielded a very poor pseudo-R squared ($R^2$ Tjur=0.023).
+We proceeded to fitting a KNN classification algorithm with Leave-One-Out Cross Validation to avoid over-fitting.  
+The best accuracy was obtained for k=2.
+
+```{r}
+Accuracy<-c("62%")
+Sensitivity<-c("50%")
+Specificity<-c("66.7%")
+knitr::kable(cbind(Accuracy, Sensitivity, Specificity), align="l", row.names=FALSE,caption="Group assignment model performance- stage C")
+```
+
+The model was able to predict group assignment in stage C with an **accuracy** rate of **62%** by using breath data alone. Our model succeeded in predicting group assignment in the test data, meaning it is not over-fitted. 
+This model achieved lower accuracy compared to the model predicting group assignment in stage B (62% vs. 73%). This is expected, as in stage C (30 minutes after the stressful task) anxiety measures were similar for both groups, making it more difficult to differentiate them.  
+The **sensitivity rate** (50%) is the same as a coin toss, and the **specificity** is a bit higher (66.7%). This means that it was easier to identify the control group, compared to the stress group.   
+
+### Summary   
+In stage C, Breath variables able to predict State anxiety better than the naive model by 23%. They were not able to predict VAS and Trait anxiety or heart rate measures.  
+They were able to predict group assignment with 62% accuracy. 
+
+## Stage D
+
+```{r}
+ddata<-data%>%filter(Stage=="D")
+#ddata$hr_diff<-ddata$heart_ratet-adata$heart_ratet
+ddata$cvnn_diff<-ddata$cvnn-adata$cvnn
+ddata$hr_diff<-ddata$heart_rate-adata$heart_rate
+ddata$state_diff<-ddata$state-adata$state
+ddata$vas_diff<-ddata$vas-adata$vas
+ddata$breath1_diff<-ddata$breath1-adata$breath1
+ddata$breath2_diff<-ddata$breath2-adata$breath2
+```
+
+In Stage D both groups were measured after an additional 30-minute wait (one hour after the stressful task).
+
+### Anxiety and HRV
+KNN regression models were fitted, cross-validated and their RMSE score was compared to the naive model (SD). The results are summarized in the table below.
+
+```{r}
+Outcome<-c("VAS anxiety", "State anxiety", "Trait anxiety", "HRV", "Mean HR")
+k<-c(20, 7,8,6,19)
+RMSE<-c("0.20", "**0.23**", "**0.22**", 0.28, 0.25)
+SD<-c(0.19, 0.24, 0.23, 0.28, 0.24)
+knitr::kable(cbind(Outcome, k, RMSE, SD), align="l", row.names=FALSE,caption="KNN models- stage D")
+```
+
+State and Trait anxiety's KNN models were slightly better than guessing based on the outcome's average, by 4-5%. The models for VAS anxiety, HRV and mean HR were not better than the naive model.
+
+### Group assignment
+A logistic regression model yielded a very poor pseudo-R squared ($R^2$ Tjur=0.08).  
+We proceeded to fitting a KNN classification algorithm with Leave-One-Out Cross Validation.  
+The highest accuracy was obtained for k=3. 
+
+```{r}
+Accuracy<-c("73%")
+Sensitivity<-c("79%")
+Specificity<-c("67%")
+knitr::kable(cbind(Accuracy, Sensitivity, Specificity), align="l", row.names=FALSE,caption="Group classifier performance- stage D")
+```
+
+The model was able to predict group assignment in stage D with an **accuracy** rate of **73%** by using breath data alone. This was achieved for the test data, meaning our model is not over-fitted.  
+**Sensitivity** and **Specificity** were relatively balanced (79% and 67%).
+
+### Summary
+Breath variables were able to predict State and Trait anxiety only slightly better than guessing based on their average, but this cannot be said for heart rate measures.  
+They were able to predict group assignment with 73% accuracy, which is surprising, as in stage D the stress group was one hour after the stressful task. More on this in the [Discussion] section.
+
+## Conclusions
+Prediction models based on breath data had minor success in predicting **State anxiety** in stages A, C and D, and also in predicting **VAS anxiety, HRV and mean heart rate** in stage A.   
+Classification models for **group assignment** achieved an accuracy rate of 73% for stages B and D, and 62% for stage C.  
+Further research with larger samples is warranted. 
+
+# Conclusions
+At [baseline](#baseline), both groups had similar anxiety, heart rate variability and breath measures.   
+when comparing [correlational patterns between breath sensors in stage A and stage B](#correlational_patterns), there seem to be differences between the control and the stress group, that may be related to the change in stress level. Further study is needed.  
+[VAS anxiety](#vas_anxiety_d) and [State anxiety](#state_anxiety_d) as well as [mean heart rate](#mean_hr_d) were higher in the stress group in stage B (after the stressful task) compared to the control group, and declined gradually for both groups in stages C and D. This suits our expectation of increase stress in stage B for the stress group but not the control group, and a decline afterwards.     
+[Heart rate variability](#hrv_d) showed no statistically significant difference between groups. Interestingly, it had a significant increase in stage B for the stress group.  
+There was no statistically significant difference in [breath1](#breath1_d) between groups in each stage or between baseline and stages B, C and D for each group.  
+[Prediction models](#prediction_models) based on breath data had minor success in predicting State anxiety in stages A, C and D, and also in predicting VAS anxiety, HRV and mean heart rate in stage A. Classification models for group assignment achieved an accuracy rate of 73% for stages B and D, and 62% for stage C.
+
+# Discussion 
+## Prediction models for anxiety and heart rate measures
+Breath biomarkers had poor performance in prediction of anxiety and heart rate measures in stages B, C and D and performed a little better in stage A. This may be because both groups had similar values for these outcomes in stage A. The models for State anxiety outperformed the naive model in stages A, C and D. In these stages the stress and the control group had similar State anxiety values.    
+Why did our models fare better when the outcome was similar for both groups? The KNN models were based solely on breath data and had no information regarding the group or stage, so it was easier for them to make predictions in stages in which the group or stage had less significance, and the groups had similar values. Making accurate predictions is more difficult when the training set and the test sets have high variability and unknown factors influencing the outcome.  
+These findings indicate that breath data may be a relevant predictor of State anxiety, and a study with a larger sample size is needed.
+
+## Prediction models for group assignment
+The group assignment classifier for stage D achieved higher accuracy compared to the classifier in stage C and similar accuracy to the classifier for stage B (73% , 62% and 73% for B, C and D). This is surprising, as we would expect that the effect of the stressful task will decline over time, making the classification harder in stage D compared to stages B and C. 
+
+When looking at the dynamics of breath1 corrected for baseline (left, the scale was inverted to match the scale of State anxiety), we can see that the groups are similar in stages A and C and less so in stage B and D. This is probably the reason for the higher accuracy in group assignment prediction in stages B and D (73%) and less so in stage C (62%). 
+
+```{r fig.height=3, fig.cap="Breath1 and State anxiety by stage and group"}
+data$breath1_dinv<-data$breath1_d*-1
+mylist <- list(Stage=c("A", "B", "C", "D"), Group=c("Stress", "Control"))
+#par(mfrow = c(1, 2))
+#layout(t(1:2))
+
+m<-lmer(breath1_dinv~ Group*Stage+(1|id),data=data, REML = T)
+g1<-emmip(m, Group ~Stage, at=mylist,CIs=TRUE)+ylab("breath1")+xlab("Stage")+ylab("Breath1 (scaled by -1)")
+
+#m<-lmer(cvnn~ Group*Stage+(1|id),data=data, REML = T)
+m<-lmer(state~ Group*Stage+(1|id),data=data, REML = T)
+g2<-emmip(m, Group ~Stage, at=mylist,CIs=TRUE)+ylab("VAS anxiety")+xlab("Stage")+ylab("State anxiety")
+
+#m<-lmer(vas~ Group*Stage+(1|id),data=data, REML = T)
+#emmip(m, Group ~Stage, at=mylist,CIs=TRUE)+ylab("State anxiety")+xlab("Stage")
+grid.arrange(g1, g2, widths=c(5,5), ncol=2)
+#par(mfrow = c(1, 1))
+```
+
+In stage D there is a big increase in breath1 for the stress group, which is counter-intuitive, as we would expect a gradual decline in anxiety.  
+The stress group has a mild increase also in State anxiety in stage D, so this finding may not be an artifact. It should also be remembered that the stress group plot is based on a sample of only 14 participants, which results in large confidence intervals.
+
+The most important message these plots convey is the need for a larger sample size, that will shorten the confidence intervals and provide a more accurate picture of the dynamics and correlations of breath1 and anxiety measures.
+
+# Study limitations  
+**Baseline differences between groups**   
+Trait anxiety was significantly lower in the stress group compared to the control group (34.6 vs. 41,  p-value=0.034). These differences in propensity for anxiety may have influenced our analysis. When the stress group is less prone to anxiety, correlations and differences between stages or between groups are harder to detect.  
+
+Trait anxiety scores were also distributed differently in the stress group and the control group, with a larger variance in the stress group. 
+
+```{r fig.height = 3, fig.width = 5, fig.cap="Distribution of Trait anxiety by group"}
+data$trait10<-data$trait*10
+ggdensity(data, x = "trait10", add = "mean", rug = TRUE,
+              color = "Group", fill = "Group",
+              palette = c("#00AFBB", "#E7B800"))+xlab("Trait anxiety score")+theme(axis.text.y = element_blank())
+#p-value is 0.07, but looks like there is a difference in the distribution of trait anxiety
+#between intervention and control
+```
+
+Other baseline characteristics (education, age, heart rate, breath1) also show a pattern of homogeneity in the control group and large variance in the stress group, which may indicate a deficiency in the randomization process.    
+A larger sample with proper randomization would help prevent this problem in future studies.
+
+**External validity** : The sample was homogeneous and had specific characteristics: age range of 18-35, predominantly single, educated (11-22 years), having served in the military, predominantly without history of a panic attack or a family history of mental health issues. Future studies should consider more varied populations in order to reach clinically applicable conclusions.
+
+**Sample size** : A larger sample size would give us greater statistical power and will also provide the KNN regression and classification algorithms a more informative database that will result in more accurate predictions.
+
+**Measurement efficiency** : Our breath predictors are based on 40 variables derived from 8 breath sensors. Further study may assist in reducing the amount of sensors needed. 
+
+# Appendix
+## HRV variable selection
+Mean heart rate (mean HR), mean of R-R intervals (mean RR), standard deviation of R-R intervals (SDNN) and coefficient of variance for R-R intervals (CVNN) are widely accepted measures of heart rate variability in the context of mental status and mental health.  
+These HRV variables were tested as predictors of VAS and State anxiety with mixed models with grouping by group and id, and a random intercept for study stage. All variables were scaled so their predictive ability can be compared using standardized regression coefficients and $R^2$.
+
+```{r}
+m1<-lmer(scale(state)~ scale(heart_rate) +(1|Group/id)+(1|Stage) ,data=data, REML = T)
+m2<-lmer(scale(state)~ scale(meanrr) +(1|Group/id)+(1|Stage) ,data=data, REML = T)#0.15
+m3<-lmer(scale(state)~ scale(sdnn) +(1|Group/id)+(1|Stage) ,data=data, REML = T)
+m4<-lmer(scale(state)~ scale(cvnn) +(1|Group/id)+(1|Stage) ,data=data, REML = T)
+#summary(m)$coefficients[2,1]
+#r2beta(m, method = 'nsj', partial = T)#0.10
+#rate is better than mean
+#tab_model(m1, m2, m4, show.ci=FALSE,  show.re.var = FALSE, show.ngroups = FALSE)
+
+sjPlot::tab_model(m1, m2, m3, m4, show.ci=FALSE, show.icc=FALSE, show.re.var = FALSE, show.ngroups = FALSE, show.obs=FALSE, dv.labels = c("Mean HR", "Mean RR", "SDNN", "CVNN"), pred.labels = c("Intercept", "Mean HR", "Mean RR", "SDNN", "CVNN"), title="State anxiety")
+```
+
+For State anxiety, mean HR and mean RR interval had nearly the same size standardized estimates (0.26 and -0.24), and the same $R^2$ (0.77). SDNN and CVNN had much lower estimates and $R^2$ values.
+
+The HRV variables were also tested as predictors of VAS anxiety:
+
+```{r}
+#testing hrv variables as predictors of vas and HRV with mixed model
+m1<-lmer(scale(vas)~ scale(heart_rate) +(1|Group/id)+(1|Stage) ,data=data, REML = T)#-0.26
+#summary(m)$coefficients[2,1]
+#r2beta(m, method = 'nsj', partial = T)#0.064
+
+
+m2<-lmer(scale(vas)~ scale(meanrr) +(1|Group/id)+(1|Stage) ,data=data, REML = T)#0.32
+#summary(m)$coefficients[2,1]
+#r2beta(m, method = 'nsj', partial = T)#0.091
+#rate is better than mean
+m3<-lmer(scale(vas)~ scale(sdnn) +(1|Group/id)+(1|Stage) ,data=data, REML = T)
+m4<-lmer(scale(vas)~ scale(cvnn) +(1|Group/id)+(1|Stage) ,data=data, REML = T)
+#tab_model(m1, m2, m4, show.ci=FALSE,  show.re.var = FALSE, show.ngroups = FALSE)
+
+sjPlot::tab_model(m1, m2,m3, m4, show.ci=FALSE, show.icc=FALSE, show.re.var = FALSE, show.ngroups = FALSE, show.obs=FALSE, dv.labels = c("Mean HR", "Mean RR", "SDNN", "CVNN"), pred.labels = c("Intercept", "Mean HR", "Mean RR", "SDNN", "CVNN"), title="VAS anxiety")
+
+```
+
+Again, Mean HR and mean RR had the largest estimates (0.31 and -0.28) and the highest $R^2$ (0.80).  
+Of the 4 HRV variables tested, Mean HR had the best metrics as a predictor of VAS and State anxiety.    
+Principal Component Analysis was also performed for these 4 variables, but the resulting linear combinations did not perform better than mean HR, and they would make results' interpretation cumbersome. Mean HR was chosen as our heart rate variable. We also used CVNN as an additional heart rate variability measure.
+
+## Breath sensor data- Principal Component Analysis {#PCA}
+breath data consisted of 40 breath variables (measured by 8 sensors with 5 features each). These variables were highly inter-correlated. Principal Component Analysis (PCA) was performed to eliminate multicollinearity and avoid over-fitting.
+The PCA method creates variables which are linear combinations of the 40 breath variables.    
+The following plot is a Scree plot- a plot of the eigenvalues of principal components in the analysis. This plot demonstrates how much variance is represented in each variable created by PCA. The first variable represents 70% of the variance of the 40 sensors. The second variable represents 10%, and the remaining variables represent less than that.
+
+```{r fig.height = 3, fig.width = 5, fig.cap="Breath variables Scree plot"}
+pca <- prcomp(br_data[, 4:43], center = TRUE, scale = TRUE)#all
+#summary(pca)
+#screeplot(pca, type = "l", npcs = 7, main = "Scree plot of the first 7 PCs")
+library(factoextra)
+#visualizing eigenvalues, 
+#Showing the percentage of variances explained by each principal component.
+fviz_eig(pca)
+#the first component has 88% of variance, the second has 8.5%
+#pc1+2+3 explain 80% of variance in the sensor data
+
+```
+
+Two outliers were identified (out of 104 observations) and were assigned the minimal consecutive value.
+
+In order to increase the percent of breath data variance represented by PCA variables, PCA was also applied for other groups of variables:   
+1. Initial difference in chemical concentration right after exhalation (deltaRstart of each of the 8 sensors. This variable was also highly correlated to the Slope feature).    
+2. The area under the curve of the graph (AUC of each of the 8 sensors).  
+3. Each of the 2 clusters identified by cluster analysis.  
+The resulting linear combinations did not perform better in outcome prediction.
+
+## Model assumptions for hypotheses testing
+### VAS anxiety model assumptions {#VAS_anxiety_model_assumptions}
+The dynamics of VAS anxiety over time by group were tested using a mixed model with a random intercept with grouping by participant and an interaction between group and stage.  
+1. The model's assumption of **linearity** is redundant, as the predictors are categorical (stage and group).  
+2.**Homogeneity of variance** (homoscedasticity)- looking at the model's residuals (left), we can see a random spread of the residuals, which satisfies the assumption of equal variance for the residuals.  
+3. **Normal distribution of residuals**- the residuals were plotted against a normal distribution in a Q-Q plot (right). The residuals only slightly deviate form the central line, which means they are normally distributed and the assumption is not violated.  
+
+```{r fig.height = 3, fig.width = 5, fig.cap="VAS anxiety model assumptions"}
+m<-lmer(vas~ Group*Stage+(1|id),data=data, REML = T)
+
+par(mfrow = c(1, 2))
+plot(resid(m))
+qqnorm(resid(m)) 
+qqline(resid(m), col = "red") # add a perfect fit line
+
+#grid.arrange(g1, g2, ncol=2)
+par(mfrow = c(1, 1))
+#mixed model assumptions
+#https://ademos.people.uic.edu/Chapter18.html
+```
+
+### State anxiety model assumptions {#State_anxiety_model_assumptions}
+The dynamics of State anxiety over time by group were tested using a mixed model with a random intercept with grouping by participant and an interaction between group and stage.    
+1. The model's assumption of **linearity** is redundant, as the predictors are categorical (stage and group).  
+2.**Homogeneity of variance** (homoscedasticity)- looking at the model's residuals (left), we can see a random spread of the residuals, which satisfies the assumption of equal variance for the residuals.  
+3. **Normal distribution of residuals**- the residuals were plotted against a normal distribution in a Q-Q plot (right). The residuals only slightly deviate form the central line, which means they are normally distributed and the assumption is not violated.  
+
+```{r fig.height = 3, fig.width = 5, fig.cap="State anxiety model assumptions"}
+m<-lmer(state~ Group*Stage+(1|id),data=data, REML = T)
+par(mfrow = c(1, 2))
+
+plot(resid(m))
+qqnorm(resid(m)) 
+qqline(resid(m), col = "red") # add a perfect fit line
+
+par(mfrow = c(1, 1))
+```
+
+### HRV model assumptions {#HRV_model_assumptions}
+The dynamics of heart rate variability over time by group were tested using a mixed model with a random intercept with grouping by participant and an interaction between group and stage.  
+1. The model's assumption of **linearity** is redundant, as the predictors are categorical (stage and group).  
+2.**Homogeneity of variance** (homoscedasticity)- looking at the model's residuals (left), we can see a random spread of the residuals, which satisfies the assumption of equal variance for the residuals.  
+3. **Normal distribution of residuals**- the residuals were plotted against a normal distribution in a Q-Q plot (right). The residuals do not deviate form the central line, which means they are normally distributed.  
+
+```{r fig.height = 3, fig.width = 5, fig.cap="HRV model assumptions"}
+m<-lmer(cvnn~ Group*Stage+(1|id),data=data, REML = T)
+par(mfrow = c(1, 2))
+
+plot(resid(m))
+qqnorm(resid(m)) 
+qqline(resid(m), col = "red") # add a perfect fit line
+
+par(mfrow = c(1, 1))
+```
+
+### Mean HR model assumptions {#Mean_HR_model_assumptions}
+The dynamics of mean HR over time by group were tested using a mixed model with a random intercept with grouping by participant and an interaction between group and stage.    
+1. The model's assumption of **linearity** is redundant, as the predictors are categorical (stage and group).  
+2.**Homogeneity of variance** (homoscedasticity)- looking at the model's residuals (left), we can see a random spread of the residuals, which satisfies the assumption of equal variance for the residuals.  
+3. **Normal distribution of residuals**- the residuals were plotted against a normal distribution in a Q-Q plot (right). The residuals only slightly deviate form the central line, which means they are approximately normally distributed and the assumption is not violated.  
+
+```{r fig.height = 3, fig.width = 5, fig.cap="Mean HR model assumptions"}
+m<-lmer(heart_rate~ Group*Stage+(1|id),data=data, REML = T)
+par(mfrow = c(1, 2))
+
+plot(resid(m))
+qqnorm(resid(m)) 
+qqline(resid(m), col = "red") # add a perfect fit line
+
+par(mfrow = c(1, 1))
+```
+
+### Breath1 model assumptions {#Breath1_model_assumptions} 
+The dynamics of breath1 over time by group were tested using a mixed model with a random intercept with grouping by participant and an interaction between group and stage.   
+1. The model's assumption of **linearity** is redundant, as the predictors are categorical (stage and group).  
+2.**Homogeneity of variance** (homoscedasticity)- looking at the model's residuals (left), we can see a random spread of the residuals, which satisfies the assumption of equal variance for the residuals.  
+3. **Normal distribution of residuals**- the residuals were plotted against a normal distribution in a Q-Q plot (right). The residuals only slightly deviate form the central line, which means they are approximately normally distributed and the assumption is not violated.  
+
+```{r fig.height = 3, fig.width = 5, fig.cap="Breath1 model assumptions"}
+m<-lmer(breath1~ Group*Stage+(1|id),data=data, REML = T)
+par(mfrow = c(1, 2))
+
+plot(resid(m))
+qqnorm(resid(m)) 
+qqline(resid(m), col = "red") # add a perfect fit line
+
+par(mfrow = c(1, 1))
+```
+
